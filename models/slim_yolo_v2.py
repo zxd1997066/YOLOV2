@@ -77,7 +77,7 @@ class SlimYOLOv2(nn.Module):
 
         return xywh_pred
     
-    def decode_boxes(self, txtytwth_pred, requires_grad=False):
+    def decode_boxes(self, txtytwth_pred, requires_grad=True):
         """
             Input:
                 txtytwth_pred : [B, H*W, anchor_n, 4] containing [tx, ty, tw, th]

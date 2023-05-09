@@ -37,7 +37,7 @@ parser.add_argument('-v', '--version', default='yolo_v2',
 parser.add_argument('-d', '--dataset', default='VOC',
                     help='VOC or COCO dataset')
 parser.add_argument('--trained_model', type=str,
-                    default='weights_yolo_v2/yolo_v2_72.2.pth', 
+                    default='weights/yolo_v2_250epoch_77.1_78.1.pth', 
                     help='Trained state_dict file path to open')
 parser.add_argument('--save_folder', default='eval/', type=str,
                     help='File path to save results')
@@ -51,24 +51,40 @@ parser.add_argument('--voc_root', default=VOC_ROOT,
                     help='Location of VOC root directory')
 parser.add_argument('--cleanup', default=True, type=str2bool,
                     help='Cleanup and remove results files following eval')
+parser.add_argument('--ipex', action='store_true', default=False,
+                    help='Use ipex')
+parser.add_argument('--jit', action='store_true', default=False,
+                    help='Use jit script')
+parser.add_argument('--precision', default='float32',
+                    help='precision, "float32" or "bfloat16"')
+parser.add_argument('--max_iters', default=500, type=int, 
+                    help='max number to run.')
+parser.add_argument('--warmup', default=10, type=int, 
+                    help='warmup number.')
+parser.add_argument('--arch', default=None, type=str, 
+                    help='model name.')
+parser.add_argument('--profile', action='store_true',
+                     help='Trigger profile on current topology.')
+parser.add_argument('--channels_last', type=int, default=1, help='use channels last format')
 
 args = parser.parse_args()
 
 if not os.path.exists(args.save_folder):
     os.mkdir(args.save_folder)
 
-if torch.cuda.is_available():
-    if args.cuda:
+if args.cuda:
+    if torch.cuda.is_available():
         torch.set_default_tensor_type('torch.cuda.FloatTensor')
         cudnn.benchmark = True
         device = torch.device("cuda")
-    if not args.cuda:
+    else:
         print("WARNING: It looks like you have a CUDA device, but aren't using \
               CUDA.  Run with --cuda for optimal eval speed.")
         torch.set_default_tensor_type('torch.FloatTensor')
         device = torch.device("cpu")
 else:
     torch.set_default_tensor_type('torch.FloatTensor')
+    device = torch.device("cpu")
 
 YEAR = '2007'
 devkit_path = args.voc_root + 'VOC' + YEAR
@@ -142,7 +158,8 @@ def get_output_dir(name, phase):
 def get_voc_results_file_template(image_set, cls):
     # VOCdevkit/VOC2007/results/det_test_aeroplane.txt
     filename = 'det_' + image_set + '_%s.txt' % (cls)
-    filedir = os.path.join(devkit_path, 'results')
+    # filedir = os.path.join(devkit_path, 'results')
+    filedir = 'results'
     if not os.path.exists(filedir):
         os.makedirs(filedir)
     path = os.path.join(filedir, filename)
@@ -155,6 +172,8 @@ def write_voc_results_file(all_boxes, dataset):
         filename = get_voc_results_file_template(set_type, cls)
         with open(filename, 'wt') as f:
             for im_ind, index in enumerate(dataset.ids):
+                if im_ind >= len(all_boxes[cls_ind]):
+                    break
                 dets = all_boxes[cls_ind][im_ind]
                 if dets == []:
                     continue
@@ -167,7 +186,8 @@ def write_voc_results_file(all_boxes, dataset):
 
 
 def do_python_eval(output_dir='output', use_07=True):
-    cachedir = os.path.join(devkit_path, 'annotations_cache')
+    # cachedir = os.path.join(devkit_path, 'annotations_cache')
+    cachedir = os.path.join('results', 'annotations_cache')
     aps = []
     # The PASCAL VOC metric changed in 2010
     use_07_metric = use_07
@@ -343,6 +363,20 @@ def voc_eval(detpath,
 
     return rec, prec, ap
 
+def trace_handler(p):
+    output = p.key_averages().table(sort_by="self_cpu_time_total")
+    print(output)
+    import pathlib
+    timeline_dir = str(pathlib.Path.cwd()) + '/timeline/'
+    if not os.path.exists(timeline_dir):
+        try:
+            os.makedirs(timeline_dir)
+        except:
+            pass
+    timeline_file = timeline_dir + 'timeline-' + str(torch.backends.quantized.engine) + \
+                '-unet-' + str(p.step_num) + '-' + str(os.getpid()) + '.json'
+    p.export_chrome_trace(timeline_file)
+
 
 def test_net(net, dataset, device, top_k):
     num_images = len(dataset)
@@ -357,17 +391,66 @@ def test_net(net, dataset, device, top_k):
     output_dir = get_output_dir('eval/', set_type)
     det_file = os.path.join(output_dir, 'detections.pkl')
 
+    batch_time_list = []
+
     for i in range(num_images):
         im, gt, h, w = dataset.pull_item(i)
+        if args.channels_last:
+            x = Variable(im.unsqueeze(0)).to(memory_format=torch.channels_last)
+        else:
+            x = Variable(im.unsqueeze(0)).to(device)
+        # jit
+        if args.jit and i == 0:
+            with torch.no_grad():
+                try:
+                    net = torch.jit.trace(net, x, check_trace=False)
+                    print("---- Use trace model.")
+                except:
+                    net = torch.jit.script(net)
+                    print("---- Use script model.")
+                if args.ipex:
+                    net = torch.jit.freeze(net)
+        if args.profile:
+            with torch.profiler.profile(
+                activities=[torch.profiler.ProfilerActivity.CPU],
+                record_shapes=True,
+                schedule=torch.profiler.schedule(
+                    wait=int(args.max_iters/2),
+                    warmup=2,
+                    active=1,
+                ),
+                on_trace_ready=trace_handler,
+            ) as p:
+                for i_ in range(args.max_iters):
+                    tic = time.time()
+                    if i_ >= args.warmup:
+                        _t['im_detect'].tic()
+                    detections = net(x)
+                    p.step()
+                    if i_ >= args.warmup:
+                        detect_time = _t['im_detect'].toc(average=False)
+                    toc = time.time()
+                    print("Iteration: {}, inference time: {} sec.".format(i_, toc - tic), flush=True)
+                    if i_ >= args.warmup:
+                        batch_time_list.append((toc - tic) * 1000)
+        else:
+            for i_ in range(args.max_iters):
+                tic = time.time()
+                if i_ >= args.warmup:
+                    _t['im_detect'].tic()
+                detections = net(x)
+                if i_ >= args.warmup:
+                    detect_time = _t['im_detect'].toc(average=False)
+                toc = time.time()
+                print("Iteration: {}, inference time: {} sec.".format(i_, toc - tic), flush=True)
+                if i_ >= args.warmup:
+                    batch_time_list.append((toc - tic) * 1000)
 
-        x = Variable(im.unsqueeze(0)).to(device)
-        _t['im_detect'].tic()
-        detections = net(x)
-        detect_time = _t['im_detect'].toc(average=False)
         bboxes, scores, cls_inds = detections
         scale = np.array([[w, h, w, h]])
         bboxes *= scale
-
+        if args.max_iters > 1:
+            break
         for j in range(len(labelmap)):
             inds = np.where(cls_inds == j)[0]
             if len(inds) == 0:
@@ -382,6 +465,20 @@ def test_net(net, dataset, device, top_k):
 
         print('im_detect: {:d}/{:d} {:.3f}s'.format(i + 1,
                                                     num_images, detect_time))
+
+
+    print("\n", "-"*20, "Summary", "-"*20)
+    latency = _t['im_detect'].average_time * 1000
+    throughput = 1 / _t['im_detect'].average_time
+    print("inference latency:\t {:.3f} ms".format(latency))
+    print("inference Throughput:\t {:.2f} samples/s".format(throughput))
+    # P50
+    batch_time_list.sort()
+    p50_latency = batch_time_list[int(len(batch_time_list) * 0.50) - 1]
+    p90_latency = batch_time_list[int(len(batch_time_list) * 0.90) - 1]
+    p99_latency = batch_time_list[int(len(batch_time_list) * 0.99) - 1]
+    print('Latency P50:\t %.3f ms\nLatency P90:\t %.3f ms\nLatency P99:\t %.3f ms\n'\
+            % (p50_latency, p90_latency, p99_latency))
 
     with open(det_file, 'wb') as f:
         pickle.dump(all_boxes, f, pickle.HIGHEST_PROTOCOL)
@@ -402,31 +499,51 @@ if __name__ == '__main__':
     if args.version == 'yolo_v2':
         from models.yolo_v2 import myYOLOv2
         net = myYOLOv2(device, input_size=cfg['min_dim'], num_classes=num_classes, anchor_size=config.ANCHOR_SIZE)
-    
     elif args.version == 'yolo_v3':
         from models.yolo_v3 import myYOLOv3
         net = myYOLOv3(device, input_size=cfg['min_dim'], num_classes=num_classes, anchor_size=config.MULTI_ANCHOR_SIZE)
-    
     elif args.version == 'slim_yolo_v2':
         from models.slim_yolo_v2 import SlimYOLOv2    
         net = SlimYOLOv2(device, input_size=cfg['min_dim'], num_classes=num_classes, anchor_size=config.ANCHOR_SIZE)
         print('Let us eval slim-yolo-v2 on the VOC0712 dataset ......')
-
     elif args.version == 'tiny_yolo_v3':
         from models.tiny_yolo_v3 import YOLOv3tiny
         net = YOLOv3tiny(device, input_size=cfg['min_dim'], num_classes=num_classes, anchor_size=config.TINY_MULTI_ANCHOR_SIZE)
         print('Let us eval tiny-yolo-v3 on the VOC0712 dataset ......')
 
     # load net
-    net.load_state_dict(torch.load(args.trained_model, map_location='cuda'))
+    if args.cuda:
+        net.load_state_dict(torch.load(args.trained_model, map_location='cuda'))
+    else:
+        net.load_state_dict(torch.load(args.trained_model, map_location='cpu'))
     net.eval()
     print('Finished loading model!')
     # load data
     dataset = VOCDetection(args.voc_root, [('2007', set_type)],
                            BaseTransform(net.input_size, mean=(0.406, 0.456, 0.485), std=(0.225, 0.224, 0.229)),
                            VOCAnnotationTransform())
-    net = net.to(device)
-    
+    if args.channels_last:
+        net_oob = net
+        net_oob = net_oob.to(memory_format=torch.channels_last)
+        net = net_oob
+        print("---- Use channels last format.")
+    else:
+        net = net.to(device)
+
+    if args.ipex:
+        import intel_extension_for_pytorch as ipex
+        print("Running with IPEX...")
+        if args.precision == "bfloat16":
+            net = ipex.optimize(net, dtype=torch.bfloat16, inplace=True)
+            print("Running with bfloat16...")
+        else:
+            net = ipex.optimize(net, dtype=torch.float32, inplace=True)
+            print("Running with float32...")
+
     # evaluation
     with torch.no_grad():
-        test_net(net, dataset, device, args.top_k)
+        if args.precision == "bfloat16":
+            with torch.cpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
+                test_net(net, dataset, device, args.top_k)
+        else:
+            test_net(net, dataset, device, args.top_k)

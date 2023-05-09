@@ -76,7 +76,7 @@ class myYOLOv2(nn.Module):
 
         return xywh_pred
     
-    def decode_boxes(self, txtytwth_pred, requires_grad=False):
+    def decode_boxes(self, txtytwth_pred, requires_grad=True):
         """
             Input:
                 txtytwth_pred : [B, H*W, anchor_n, 4] containing [tx, ty, tw, th]
@@ -199,9 +199,9 @@ class myYOLOv2(nn.Module):
                 all_bbox = torch.clamp((self.decode_boxes(txtytwth_pred) / self.scale_torch)[0], 0., 1.)
                 all_class = (torch.softmax(cls_pred[0, :, :], 1) * all_obj)
                 # separate box pred and class conf
-                all_obj = all_obj.to('cpu').numpy()
-                all_class = all_class.to('cpu').numpy()
-                all_bbox = all_bbox.to('cpu').numpy()
+                all_obj = all_obj.float().to('cpu').numpy()
+                all_class = all_class.float().to('cpu').numpy()
+                all_bbox = all_bbox.float().to('cpu').numpy()
 
                 bboxes, scores, cls_inds = self.postprocess(all_bbox, all_class)
 
