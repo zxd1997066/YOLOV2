@@ -21,7 +21,7 @@ function prepare_workload {
 
 function main {
     # prepare workload
-    prepare_workload
+    prepare_workload $@
 
     # if multiple use 'xxx,xxx,xxx'
     model_name_list=($(echo "${model_name}" |sed 's/,/ /g'))
