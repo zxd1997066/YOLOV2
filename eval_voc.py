@@ -545,5 +545,8 @@ if __name__ == '__main__':
         if args.precision == "bfloat16":
             with torch.cpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
                 test_net(net, dataset, device, args.top_k)
+        elif args.precision == "float16":
+            with torch.cpu.amp.autocast(enabled=True, dtype=torch.half):
+                test_net(net, dataset, device, args.top_k)
         else:
             test_net(net, dataset, device, args.top_k)
