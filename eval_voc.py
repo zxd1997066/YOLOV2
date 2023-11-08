@@ -66,6 +66,10 @@ parser.add_argument('--arch', default=None, type=str,
 parser.add_argument('--profile', action='store_true',
                      help='Trigger profile on current topology.')
 parser.add_argument('--channels_last', type=int, default=1, help='use channels last format')
+parser.add_argument("--compile", action='store_true', default=False,
+                    help="enable torch.compile")
+parser.add_argument("--backend", type=str, default='inductor',
+                    help="enable torch.compile backend")
 
 args = parser.parse_args()
 
@@ -392,6 +396,8 @@ def test_net(net, dataset, device, top_k):
     det_file = os.path.join(output_dir, 'detections.pkl')
 
     batch_time_list = []
+    if args.compile:
+        net = torch.compile(net, backend=args.backend, options={"freezing": True})
 
     for i in range(num_images):
         im, gt, h, w = dataset.pull_item(i)
