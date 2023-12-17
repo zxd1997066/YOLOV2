@@ -549,10 +549,10 @@ if __name__ == '__main__':
     # evaluation
     with torch.no_grad():
         if args.precision == "bfloat16":
-            with torch.cpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
+            with torch.autocast(device_type="cuda" if torch.cuda.is_available() else "cpu", enabled=True, dtype=torch.bfloat16):
                 test_net(net, dataset, device, args.top_k)
         elif args.precision == "float16":
-            with torch.cpu.amp.autocast(enabled=True, dtype=torch.half):
+            with torch.autocast(device_type="cuda" if torch.cuda.is_available() else "cpu", enabled=True, dtype=torch.half):
                 test_net(net, dataset, device, args.top_k)
         else:
             test_net(net, dataset, device, args.top_k)
