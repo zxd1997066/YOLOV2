@@ -76,17 +76,13 @@ args = parser.parse_args()
 if not os.path.exists(args.save_folder):
     os.mkdir(args.save_folder)
 
-if args.cuda:
-    if torch.cuda.is_available():
-        torch.set_default_tensor_type('torch.cuda.FloatTensor')
-        cudnn.benchmark = True
-        device = torch.device("cuda")
-    else:
-        print("WARNING: It looks like you have a CUDA device, but aren't using \
-              CUDA.  Run with --cuda for optimal eval speed.")
-        torch.set_default_tensor_type('torch.FloatTensor')
-        device = torch.device("cpu")
+if torch.cuda.is_available():
+    torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    cudnn.benchmark = True
+    device = torch.device("cuda")
 else:
+    print("WARNING: It looks like you have a CUDA device, but aren't using \
+          CUDA.  Run with --cuda for optimal eval speed.")
     torch.set_default_tensor_type('torch.FloatTensor')
     device = torch.device("cpu")
 
