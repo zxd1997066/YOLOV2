@@ -399,8 +399,7 @@ def test_net(net, dataset, device, top_k):
         im, gt, h, w = dataset.pull_item(i)
         if args.channels_last:
             x = Variable(im.unsqueeze(0)).to(memory_format=torch.channels_last)
-        else:
-            x = Variable(im.unsqueeze(0)).to(device)
+        x = Variable(im.unsqueeze(0)).to(device)
         # jit
         if args.jit and i == 0:
             with torch.no_grad():
@@ -410,8 +409,7 @@ def test_net(net, dataset, device, top_k):
                 except:
                     net = torch.jit.script(net)
                     print("---- Use script model.")
-                if args.ipex:
-                    net = torch.jit.freeze(net)
+                net = torch.jit.freeze(net)
         if args.profile:
             with torch.profiler.profile(
                 activities=[torch.profiler.ProfilerActivity.CPU],
@@ -428,6 +426,7 @@ def test_net(net, dataset, device, top_k):
                     if i_ >= args.warmup:
                         _t['im_detect'].tic()
                     detections = net(x)
+                    if torch.cuda.is_available(): torch.cuda.synchronize()
                     p.step()
                     if i_ >= args.warmup:
                         detect_time = _t['im_detect'].toc(average=False)
@@ -441,6 +440,7 @@ def test_net(net, dataset, device, top_k):
                 if i_ >= args.warmup:
                     _t['im_detect'].tic()
                 detections = net(x)
+                if torch.cuda.is_available(): torch.cuda.synchronize()
                 if i_ >= args.warmup:
                     detect_time = _t['im_detect'].toc(average=False)
                 toc = time.time()
@@ -529,8 +529,7 @@ if __name__ == '__main__':
         net_oob = net_oob.to(memory_format=torch.channels_last)
         net = net_oob
         print("---- Use channels last format.")
-    else:
-        net = net.to(device)
+    net = net.to(device)
 
     if args.ipex:
         import intel_extension_for_pytorch as ipex
