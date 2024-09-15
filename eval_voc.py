@@ -70,6 +70,8 @@ parser.add_argument("--compile", action='store_true', default=False,
                     help="enable torch.compile")
 parser.add_argument("--backend", type=str, default='inductor',
                     help="enable torch.compile backend")
+parser.add_argument("--triton_cpu", action='store_true', default=False,
+                    help="enable triton_cpu")
 
 args = parser.parse_args()
 
@@ -385,7 +387,10 @@ def test_net(net, dataset, device, top_k):
     #    (x1, y1, x2, y2, score)
     all_boxes = [[[] for _ in range(num_images)]
                  for _ in range(len(labelmap))]
-
+    if args.triton_cpu:
+        print("run with triton cpu backend")
+        import torch._inductor.config
+        torch._inductor.config.cpu_backend="triton"
     # timers
     _t = {'im_detect': Timer(), 'misc': Timer()}
     output_dir = get_output_dir('eval/', set_type)
