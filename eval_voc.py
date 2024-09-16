@@ -399,7 +399,7 @@ def test_net(net, dataset, device, top_k):
     batch_time_list = []
     if args.compile:
         net = torch.compile(net, backend=args.backend, options={"freezing": True})
-
+    import torch
     for i in range(num_images):
         im, gt, h, w = dataset.pull_item(i)
         if args.channels_last:
