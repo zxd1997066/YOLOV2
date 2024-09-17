@@ -387,6 +387,7 @@ def test_net(net, dataset, device, top_k):
     #    (x1, y1, x2, y2, score)
     all_boxes = [[[] for _ in range(num_images)]
                  for _ in range(len(labelmap))]
+    import torch
     if args.triton_cpu:
         print("run with triton cpu backend")
         import torch._inductor.config
